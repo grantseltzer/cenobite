@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/iovisor/gobpf/bcc"
 	"github.com/urfave/cli/v2"
 )
 
@@ -38,11 +39,18 @@ func main() {
 }
 
 func entry(c *cli.Context) error {
+
 	configPath := c.String("config")
-	config, err := readConfig(configPath)
+	config, err := readConfigFromFile(configPath)
 	if err != nil {
 		return err
 	}
+
+	//
+
+	fmt.Println(bcc.GetSyscallFnName("schmoop"))
+
+	fmt.Println(config.EventsToTrace)
 
 	return nil
 }
