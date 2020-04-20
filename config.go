@@ -4,45 +4,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-
-	"github.com/iovisor/gobpf/bcc"
 )
 
 type config struct {
 	EventsToTrace []event
 }
 
-type event_type uint8
-
-const (
-	EVENT_INVALID       = 0
-	EVENT_SYSCALL uint8 = iota
-	EVENT_KPROBE
-)
-
-type event interface {
-	getNormalizedName()
+type event struct {
+	FunctionName string
 }
 
-type syscall_event struct {
-	SpecifiedName string
-	FunctionName  string
-	Number        uint16
+func (e event) getFunctionName() string {
+	return e.FunctionName
 }
 
-type kprobe_event struct {
-	SpecifiedName string
-	FunctionName  string
-	Address       uint64
-}
-
-func (s syscall_event) getNormalizedName() {
-	s.FunctionName = bcc.GetSyscallFnName(s.SpecifiedName)
-}
-
-func (k kprobe_event) getNormalizedName() {
-	//TODO:
-}
+func (e event) normalizeName() {}
 
 func readConfigFromFile(path string) (*config, error) {
 
@@ -57,10 +33,9 @@ func readConfigFromFile(path string) (*config, error) {
 		return nil, fmt.Errorf("could not parse config: %s", err.Error())
 	}
 
-	// Normalize names of specified events
-
+	// Normalize names of specified events (for syscalls)
 	for _, e := range config.EventsToTrace {
-		e.getNormalizedName()
+		e.normalizeName()
 	}
 
 	return config, nil

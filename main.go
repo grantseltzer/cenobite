@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/iovisor/gobpf/bcc"
-	"github.com/urfave/cli/v2"
+	cli "github.com/urfave/cli/v2"
 )
 
 var (
@@ -46,11 +45,7 @@ func entry(c *cli.Context) error {
 		return err
 	}
 
-	//
-
-	fmt.Println(bcc.GetSyscallFnName("schmoop"))
-
-	fmt.Println(config.EventsToTrace)
+	loadProbes(config)
 
 	return nil
 }
