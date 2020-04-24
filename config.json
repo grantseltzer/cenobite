@@ -1,0 +1,7 @@
+{
+    "events_to_trace": [
+        {
+            "function_name": "getcwd"
+        }
+    ]
+}

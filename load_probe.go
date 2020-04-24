@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"html/template"
 	"log"
@@ -16,15 +17,13 @@ const bpfProgram = `
 	#include <linux/sched.h>
 	#include <linux/string.h>
 
-	char function[{{ len .FunctionName }}] = "{{ .FunctionName }}";
-
 	BPF_PERF_OUTPUT(events);
 
 	struct proc_info_t {
 		u32 pid;  				  // PID as in the userspace term (i.e. task->tgid in kernel)
 		u32 ppid;				  // Parent PID as in the userspace term (i.e task->real_parent->tgid in kernel)
 		char comm[TASK_COMM_LEN]; // 16 bytes
-		char* function; // name of kprobe (set by text template)
+		char function[16]; // name of kprobe (set by text template)
 	};
 
 	inline int tracer(struct pt_regs *ctx) {
@@ -36,7 +35,8 @@ const bpfProgram = `
 		procInfo.pid = bpf_get_current_pid_tgid() >> 32;
 		procInfo.ppid = task->real_parent->tgid;
 		bpf_get_current_comm(&procInfo.comm, sizeof(procInfo.comm));
-		procInfo.function = function;
+
+		strcpy(procInfo.function, "{{ .FunctionName }}");
 
 		// submit process info
 		events.perf_submit(ctx, &procInfo, sizeof(procInfo));
@@ -63,18 +63,20 @@ func loadProbes(c *config) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, os.Kill)
 
+	runtimeContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	for i := range c.EventsToTrace {
-		go loadProbeAndListen(c.EventsToTrace[i])
+		go loadProbeAndListen(runtimeContext, c.EventsToTrace[i])
 	}
 
 	<-sig
 	return nil
 }
 
-func loadProbeAndListen(e event) error {
+func loadProbeAndListen(ctx context.Context, e event) error {
 
 	bpfProgram := bpfText(e)
-	fmt.Println(">", bpfProgram)
 
 	mod := bcc.NewModule(bpfProgram, []string{})
 	defer mod.Close()
@@ -89,5 +91,30 @@ func loadProbeAndListen(e event) error {
 		return err
 	}
 
+	table := bcc.NewTable(mod.TableId("events"), mod)
+	channel := make(chan []byte)
+	lostChannel := make(chan uint64)
+
+	perfMap, err := bcc.InitPerfMap(table, channel, lostChannel)
+	if err != nil {
+		return err
+	}
+
+	go perfListen(ctx, channel)
+
+	perfMap.Start()
+	<-ctx.Done()
+	perfMap.Stop()
+
 	return nil
+}
+
+func perfListen(ctx context.Context, rawBytes chan []byte) {
+
+	for {
+		b := <-rawBytes
+		var p procInfo
+		p.unmarshalBinary(b)
+		fmt.Printf("%+v\n", p)
+	}
 }

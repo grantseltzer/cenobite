@@ -4,21 +4,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+
+	"github.com/iovisor/gobpf/bcc"
 )
 
 type config struct {
-	EventsToTrace []event
+	EventsToTrace []event `json:"events_to_trace"`
 }
 
 type event struct {
-	FunctionName string
+	FunctionName string `json:"function_name"`
 }
 
-func (e event) getFunctionName() string {
+func (e *event) getFunctionName() string {
 	return e.FunctionName
 }
 
-func (e event) normalizeName() {}
+func (e *event) normalizeName() {
+	e.FunctionName = bcc.GetSyscallFnName(e.FunctionName)
+}
 
 func readConfigFromFile(path string) (*config, error) {
 
@@ -34,8 +38,8 @@ func readConfigFromFile(path string) (*config, error) {
 	}
 
 	// Normalize names of specified events (for syscalls)
-	for _, e := range config.EventsToTrace {
-		e.normalizeName()
+	for i := range config.EventsToTrace {
+		config.EventsToTrace[i].normalizeName()
 	}
 
 	return config, nil
