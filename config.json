@@ -1,7 +1,7 @@
 {
     "events_to_trace": [
         {
-            "function_name": "getcwd"
+            "function_name": "commit_creds"
         }
     ]
 }
