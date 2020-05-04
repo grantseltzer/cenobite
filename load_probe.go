@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
@@ -24,6 +25,9 @@ const bpfProgram = `
 		u32 pid;  				  // PID as in the userspace term (i.e. task->tgid in kernel)
 		u32 ppid;				  // Parent PID as in the userspace term (i.e task->real_parent->tgid in kernel)
 
+		u32 old_uid;
+		u32 old_gid;
+
 		u32 new_uid;
 		u32 new_gid;
 
@@ -36,44 +40,48 @@ const bpfProgram = `
 		int ret;                  // return code of traced function
 	};
 
-	inline int tracer(struct pt_regs *ctx) {
+	inline int commit_creds_tracer(struct pt_regs *ctx) {
 		
-		// get process info
+		// Get base process info
 		struct task_struct *task;
 		struct proc_info_t procInfo = {};
 		task = (struct task_struct *)bpf_get_current_task();
 		procInfo.pid = bpf_get_current_pid_tgid() >> 32;
 		procInfo.ppid = task->real_parent->tgid;
 
+		// Read in current creds structure
+		struct cred old_creds;
+		struct cred* old_creds_ptr;
+
+		bpf_probe_read(&old_creds_ptr, sizeof(old_creds_ptr), &task->cred);
+		bpf_probe_read(&old_creds, sizeof(old_creds), old_creds_ptr);
+
+		procInfo.old_uid = (u32)old_creds.euid.val;
+		procInfo.old_gid = (u32)old_creds.egid.val;
+
+		// Read in creds structure that was passed to commit_creds
 		struct cred new_creds;
 		struct cred* new_creds_ptr;
-
+		
 		bpf_probe_read(&new_creds_ptr, sizeof(new_creds_ptr), &PT_REGS_PARM1(ctx));
 		bpf_probe_read(&new_creds, sizeof(new_creds), new_creds_ptr);
 
-		procInfo.new_uid = (u32)new_creds.uid.val;
-		procInfo.new_gid = (u32)new_creds.gid.val;
+		procInfo.new_uid = (u32)new_creds.euid.val;
+		procInfo.new_gid = (u32)new_creds.egid.val;
 
 		bpf_get_current_comm(&procInfo.comm, sizeof(procInfo.comm));
 
 		char functionName[] = "{{ .FunctionName }}";
 		bpf_probe_read_str(&procInfo.function, 16, &functionName);
-
-		// submit process info
-		events.perf_submit(ctx, &procInfo, sizeof(procInfo));
+		
+		if (procInfo.new_uid != procInfo.old_uid || procInfo.new_gid != procInfo.old_gid) {
+			bpf_trace_printk("%d %d ", procInfo.new_uid, procInfo.new_gid);
+			bpf_trace_printk("%d %d\n", procInfo.old_uid, procInfo.old_gid);
+			events.perf_submit(ctx, &procInfo, sizeof(procInfo));	
+		}
 
 		return 0;
 	}
-
-	inline int ret_tracer(struct pt_regs *ctx) {
-		struct task_struct *task;
-		struct proc_return_info_t procInfo = {};
-		task = (struct task_struct *)bpf_get_current_task();
-		procInfo.pid = bpf_get_current_pid_tgid() >> 32;
-		procInfo.ret = PT_REGS_RC(ctx);
-		events.perf_submit(ctx, &procInfo, sizeof(procInfo));
-		return 0;
-	}	
 `
 
 func bpfText(e event) (bpfProgramText string) {
@@ -98,7 +106,6 @@ func loadProbes(c *config) {
 	defer cancel()
 
 	for i := range c.EventsToTrace {
-		fmt.Println(c.EventsToTrace[i].FunctionName)
 		go loadProbesAndListen(runtimeContext, c.EventsToTrace[i])
 	}
 
@@ -112,7 +119,7 @@ func loadProbesAndListen(ctx context.Context, e event) error {
 	mod := bcc.NewModule(bpfProgram, []string{})
 	defer mod.Close()
 
-	kprobeFd, err := mod.LoadKprobe("tracer")
+	kprobeFd, err := mod.LoadKprobe("commit_creds_tracer")
 	if err != nil {
 		return err
 	}
@@ -141,7 +148,11 @@ listenLoop:
 		case b := <-channel:
 			var p procInfo
 			p.unmarshalBinary(b)
-			fmt.Printf("%+v\n", p)
+			jsonP, err := json.Marshal(p)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("%s\n", jsonP)
 		case <-ctx.Done():
 			break listenLoop
 		}
@@ -150,14 +161,4 @@ listenLoop:
 	perfMap.Stop()
 
 	return nil
-}
-
-func perfListen(ctx context.Context, rawBytes chan []byte) {
-
-	for {
-		b := <-rawBytes
-		var p procInfo
-		p.unmarshalBinary(b)
-		fmt.Printf("%+v\n", p)
-	}
 }
